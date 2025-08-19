@@ -7,10 +7,18 @@ const DB_VERSION = 1;
 document.addEventListener('DOMContentLoaded', init);
 
 function init() {
+    console.log('Initializing app...');
     setupTabs();
-    initDatabase();
-    loadInventory();
-    calculateDashboard();
+    initDatabase().then(() => {
+        console.log('Database initialized');
+        loadInventory();
+        calculateDashboard();
+        showStatus('App is ready!', 'is-success', 2000);
+    }).catch(error => {
+        console.error('Failed to initialize database:', error);
+        showStatus('Failed to load app. Please refresh.', 'is-danger');
+    });
+    
     document.getElementById('saveBtn').addEventListener('click', saveTransaction);
     document.getElementById('refreshBtn').addEventListener('click', loadInventory);
 }
@@ -31,36 +39,47 @@ function setupTabs() {
 }
 
 function initDatabase() {
-    const request = indexedDB.open(DB_NAME, DB_VERSION);
+    console.log('Initializing database...');
+    return new Promise((resolve, reject) => {
+        const request = indexedDB.open(DB_NAME, DB_VERSION);
 
-    request.onerror = (event) => {
-        showStatus('Error loading database.', 'is-danger');
-    };
+        request.onerror = (event) => {
+            console.error('Database error:', event.target.error);
+            reject(event.target.error);
+        };
 
-    request.onupgradeneeded = (event) => {
-        db = event.target.result;
-        
-        // Create object store for transactions
-        if (!db.objectStoreNames.contains('transactions')) {
-            const transactionStore = db.createObjectStore('transactions', { keyPath: 'id', autoIncrement: true });
-            transactionStore.createIndex('type', 'type', { unique: false });
-            transactionStore.createIndex('date', 'date', { unique: false });
-        }
-        
-        // Create object store for products (inventory)
-        if (!db.objectStoreNames.contains('products')) {
-            const productStore = db.createObjectStore('products', { keyPath: 'productId' });
-            productStore.createIndex('name', 'name', { unique: false });
-        }
-    };
+        request.onupgradeneeded = (event) => {
+            db = event.target.result;
+            
+            // Create object store for transactions
+            if (!db.objectStoreNames.contains('transactions')) {
+                const transactionStore = db.createObjectStore('transactions', { keyPath: 'id', autoIncrement: true });
+                transactionStore.createIndex('type', 'type', { unique: false });
+                transactionStore.createIndex('date', 'date', { unique: false });
+            }
+            
+            // Create object store for products (inventory)
+            if (!db.objectStoreNames.contains('products')) {
+                const productStore = db.createObjectStore('products', { keyPath: 'productId' });
+                productStore.createIndex('name', 'name', { unique: false });
+            }
+        };
 
-    request.onsuccess = (event) => {
-        db = event.target.result;
-        showStatus('App is ready!', 'is-success', 2000);
-    };
+        request.onsuccess = (event) => {
+            db = event.target.result;
+            console.log('Database opened successfully');
+            resolve(db);
+        };
+    });
 }
 
 function saveTransaction() {
+    // Check if database is ready
+    if (!db) {
+        showStatus('Database is not ready yet. Please wait.', 'is-danger');
+        return;
+    }
+
     const type = document.getElementById('type').value;
     const productId = document.getElementById('productId').value.trim();
     const productName = document.getElementById('productName').value.trim();
@@ -72,7 +91,7 @@ function saveTransaction() {
         return;
     }
 
-    const transaction = {
+    const transactionData = {
         type: type,
         productId: productId,
         productName: productName,
@@ -81,52 +100,65 @@ function saveTransaction() {
         date: new Date().toISOString()
     };
 
-    const dbtransaction = db.transaction(['transactions', 'products'], 'readwrite');
-    
-    // Save the transaction
-    dbtransaction.objectStore('transactions').add(transaction);
-    
-    // Update or create the product in inventory
-    const productRequest = dbtransaction.objectStore('products').get(productId);
-    
-    productRequest.onsuccess = (event) => {
-        const product = event.target.result || { 
-            productId: productId, 
-            name: productName, 
-            totalPurchased: 0, 
-            totalSold: 0, 
-            totalCost: 0, 
-            totalRevenue: 0 
+    try {
+        const dbTransaction = db.transaction(['transactions', 'products'], 'readwrite');
+        
+        // Save the transaction
+        dbTransaction.objectStore('transactions').add(transactionData);
+        
+        // Update or create the product in inventory
+        const productStore = dbTransaction.objectStore('products');
+        const productRequest = productStore.get(productId);
+        
+        productRequest.onsuccess = (event) => {
+            const product = event.target.result || { 
+                productId: productId, 
+                name: productName, 
+                totalPurchased: 0, 
+                totalSold: 0, 
+                totalCost: 0, 
+                totalRevenue: 0 
+            };
+            
+            if (type === 'Purchase') {
+                product.totalPurchased += quantity;
+                product.totalCost += (quantity * price);
+            } else { // Sale
+                product.totalSold += quantity;
+                product.totalRevenue += (quantity * price);
+            }
+            
+            // Recalculate average price
+            product.averagePrice = product.totalPurchased > 0 ? 
+                (product.totalCost / product.totalPurchased) : 0;
+            
+            // Update the product
+            productStore.put(product);
         };
-        
-        if (type === 'Purchase') {
-            product.totalPurchased += quantity;
-            product.totalCost += (quantity * price);
-        } else { // Sale
-            product.totalSold += quantity;
-            product.totalRevenue += (quantity * price);
-        }
-        
-        // Recalculate average price
-        product.averagePrice = product.totalPurchased > 0 ? (product.totalCost / product.totalPurchased) : 0;
-        
-        // Update the product
-        dbtransaction.objectStore('products').put(product);
-    };
 
-    dbtransaction.oncomplete = () => {
-        showStatus('Transaction saved successfully!', 'is-success');
-        clearForm();
-        loadInventory();
-        calculateDashboard();
-    };
+        dbTransaction.oncomplete = () => {
+            showStatus('Transaction saved successfully!', 'is-success');
+            clearForm();
+            loadInventory();
+            calculateDashboard();
+        };
 
-    dbtransaction.onerror = () => {
-        showStatus('Error saving transaction.', 'is-danger');
-    };
+        dbTransaction.onerror = (event) => {
+            console.error('Transaction error:', event.target.error);
+            showStatus('Error saving transaction: ' + event.target.error.message, 'is-danger');
+        };
+    } catch (error) {
+        console.error('Error:', error);
+        showStatus('Error: ' + error.message, 'is-danger');
+    }
 }
 
 function loadInventory() {
+    if (!db) {
+        showStatus('Database not ready.', 'is-warning');
+        return;
+    }
+
     const transaction = db.transaction('products', 'readonly');
     const request = transaction.objectStore('products').getAll();
 
@@ -135,21 +167,32 @@ function loadInventory() {
         const tbody = document.querySelector('#inventoryTable tbody');
         tbody.innerHTML = '';
 
+        if (products.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="5" class="has-text-centered">No products found. Add a transaction first.</td></tr>';
+            return;
+        }
+
         products.forEach(product => {
             const currentStock = product.totalPurchased - product.totalSold;
             const row = `<tr>
                 <td>${product.productId}</td>
                 <td>${product.name}</td>
                 <td class="${currentStock <= 5 ? 'has-text-danger has-text-weight-bold' : ''}">${currentStock}</td>
-                <td>$${product.averagePrice.toFixed(2)}</td>
-                <td>$${(currentStock * product.averagePrice).toFixed(2)}</td>
+                <td>$${product.averagePrice ? product.averagePrice.toFixed(2) : '0.00'}</td>
+                <td>$${(currentStock * (product.averagePrice || 0)).toFixed(2)}</td>
             </tr>`;
             tbody.innerHTML += row;
         });
     };
+
+    request.onerror = () => {
+        showStatus('Error loading inventory.', 'is-danger');
+    };
 }
 
 function calculateDashboard() {
+    if (!db) return;
+
     const transaction = db.transaction('transactions', 'readonly');
     const request = transaction.objectStore('transactions').getAll();
 
@@ -176,7 +219,7 @@ function calculateDashboard() {
 
             products.forEach(p => {
                 const stock = p.totalPurchased - p.totalSold;
-                inventoryValue += (stock * p.averagePrice);
+                inventoryValue += (stock * (p.averagePrice || 0));
             });
 
             // Update the dashboard
@@ -206,5 +249,4 @@ function showStatus(message, type, duration = 3000) {
             statusEl.classList.add('is-hidden');
         }, duration);
     }
-
 }
