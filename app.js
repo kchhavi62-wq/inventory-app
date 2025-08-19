@@ -81,13 +81,13 @@ function saveTransaction() {
         date: new Date().toISOString()
     };
 
-    const transaction = db.transaction(['transactions', 'products'], 'readwrite');
+    const dbtransaction = db.transaction(['transactions', 'products'], 'readwrite');
     
     // Save the transaction
-    transaction.objectStore('transactions').add(transaction);
+    dbtransaction.objectStore('transactions').add(transaction);
     
     // Update or create the product in inventory
-    const productRequest = transaction.objectStore('products').get(productId);
+    const productRequest = dbtransaction.objectStore('products').get(productId);
     
     productRequest.onsuccess = (event) => {
         const product = event.target.result || { 
@@ -111,17 +111,17 @@ function saveTransaction() {
         product.averagePrice = product.totalPurchased > 0 ? (product.totalCost / product.totalPurchased) : 0;
         
         // Update the product
-        transaction.objectStore('products').put(product);
+        dbtransaction.objectStore('products').put(product);
     };
 
-    transaction.oncomplete = () => {
+    dbtransaction.oncomplete = () => {
         showStatus('Transaction saved successfully!', 'is-success');
         clearForm();
         loadInventory();
         calculateDashboard();
     };
 
-    transaction.onerror = () => {
+    dbtransaction.onerror = () => {
         showStatus('Error saving transaction.', 'is-danger');
     };
 }
@@ -206,4 +206,5 @@ function showStatus(message, type, duration = 3000) {
             statusEl.classList.add('is-hidden');
         }, duration);
     }
+
 }
